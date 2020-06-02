@@ -6,7 +6,7 @@ A AS(SELECT
   event_name as EVENT_NAME,
   user_pseudo_id as FIREBASE_ID,
 FROM
-  `neo-smart-gcm.analytics_196410282.events_*`
+  `{project-id}.events_*`
 WHERE
   (event_name LIKE 'SCREEN%' OR event_name = 'session_start' OR event_name = 'first_open' OR event_name = 'app_exception' ) AND
   _TABLE_SUFFIX BETWEEN '20200531' AND '20200531' # 조회기간 (시작일, 종료일)
@@ -43,7 +43,7 @@ B AS(
     user_pseudo_id,
     MAX(IF(up.key = 'UCIC', up.value.string_value, null)) AS UCIC,
     MAX(IF(up.key = 'UCID', up.value.string_value, null)) AS UCID
-  FROM `analytics_196410282.events_*`, UNNEST(user_properties) as up
+  FROM `{project-id}.events_*`, UNNEST(user_properties) as up
   WHERE _TABLE_SUFFIX BETWEEN '20200531' AND '20200531'
   GROUP BY 1
 ),
