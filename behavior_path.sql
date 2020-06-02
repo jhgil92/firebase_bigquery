@@ -1,33 +1,74 @@
-SELECT
-  EVENT_DT, EVENT_TIMESTAMP, EVENT_TIME, SESSION_ID, EVENT_NAME, FIREBASE_ID, BF_EVENT, AF_EVENT, DURATION_SECOND, 
-  IF(EVENT_NAME = 'session_start', '세션시작', b1.internal_event_detail) AS EVENT_NAME_KR,
-  IF(BF_EVENT = 'session_start', '세션시작', b2.internal_event_detail) AS BF_EVENT_KR,
-  IF(AF_EVENT IS NULL, '세션종료', b3.internal_event_detail) AS AF_EVENT_KR
-FROM (
+WITH
+A AS(SELECT
+  event_date AS EVENT_DT,
+  event_timestamp AS EVENT_TIMESTAMP,
+  FORMAT_TIMESTAMP('%H:%M:%S', TIMESTAMP_MICROS(event_timestamp), 'Asia/Seoul') as EVENT_TIME,
+  event_name as EVENT_NAME,
+  user_pseudo_id as FIREBASE_ID,
+FROM
+  `neo-smart-gcm.analytics_196410282.events_*`
+WHERE
+  (event_name LIKE 'SCREEN%' OR event_name = 'session_start' OR event_name = 'first_open' OR event_name = 'app_exception' ) AND
+  _TABLE_SUFFIX BETWEEN '20200531' AND '20200531' # 조회기간 (시작일, 종료일)
+ORDER BY 1, 5, 2, 3
+),
+A1 AS(
   SELECT
+    *, IF(EVENT_TIMESTAMP_BEFORE IS NULL OR (event_timestamp - EVENT_TIMESTAMP_BEFORE) > (30*60*1000*1000), 1, 0) AS SESS_START
+  FROM(
+    SELECT *, LAG(event_timestamp, 1) OVER(PARTITION BY FIREBASE_ID ORDER BY event_timestamp ASC) as EVENT_TIMESTAMP_BEFORE,
+    FROM A
+  )
+),
+A2 AS(
+SELECT
+  EVENT_DT, EVENT_TIMESTAMP, EVENT_TIME, EVENT_NAME, FIREBASE_ID,
+  CONCAT(EVENT_DT, '_', FIREBASE_ID, '_', SUM(SESS_START) OVER(PARTITION BY FIREBASE_ID ORDER BY event_timestamp)) as SESSION_ID, 1 AS SEQ
+FROM A1
+),
+A3 AS(
+SELECT EVENT_DT, EVENT_TIMESTAMP, EVENT_TIME, EVENT_NAME, FIREBASE_ID, SESSION_ID, SUM(SEQ) OVER(PARTITION BY SESSION_ID ORDER BY event_timestamp) AS SESSION_SEQ
+FROM A2
+),
+A4 AS(
+SELECT
     *,
     LAG(EVENT_NAME)  OVER (PARTITION BY SESSION_ID ORDER BY EVENT_TIMESTAMP) AS BF_EVENT,
     LEAD(EVENT_NAME) OVER (PARTITION BY SESSION_ID ORDER BY EVENT_TIMESTAMP) AS AF_EVENT,
     TIMESTAMP_DIFF(TIMESTAMP_MICROS(LEAD(EVENT_TIMESTAMP) OVER (PARTITION BY SESSION_ID ORDER BY EVENT_TIMESTAMP)), TIMESTAMP_MICROS(EVENT_TIMESTAMP), SECOND) AS DURATION_SECOND
-  FROM(   
-    SELECT
-      event_date AS EVENT_DT,
-      event_timestamp AS EVENT_TIMESTAMP,
-      FORMAT_TIMESTAMP('%H:%M:%S', TIMESTAMP_MICROS(event_timestamp), 'Asia/Seoul') as EVENT_TIME,
-      CONCAT(user_pseudo_id, '_', event_date, '_', ep.value.int_value) as SESSION_ID,
-      event_name as EVENT_NAME,
-      user_pseudo_id as FIREBASE_ID
-    FROM
-      `####.events_*`,
-      UNNEST (event_params) as ep
-    WHERE
-      (event_name LIKE 'SCREEN%' OR event_name LIKE 'EVENT%' OR event_name = 'session_start') AND (ep.key = 'ga_session_id') AND _TABLE_SUFFIX BETWEEN '20200407' AND '20200407' # 조회기간 (시작일, 종료일)
-    GROUP BY 1, 2, 3, 4, 5, 6
-    ORDER BY 6, 4, 2
-    )
-  ORDER BY 6, 4, 2
-) a
-LEFT JOIN `####.event_name_list` AS b1 ON a.EVENT_NAME = b1.internal_event_name
-LEFT JOIN `####.event_name_list` AS b2 ON a.BF_EVENT = b2.internal_event_name
-LEFT JOIN `####.event_name_list` AS b3 ON a.AF_EVENT = b3.internal_event_name
-ORDER BY 6, 4, 2
+FROM A3
+),
+B AS(
+  SELECT 
+    user_pseudo_id,
+    MAX(IF(up.key = 'UCIC', up.value.string_value, null)) AS UCIC,
+    MAX(IF(up.key = 'UCID', up.value.string_value, null)) AS UCID
+  FROM `analytics_196410282.events_*`, UNNEST(user_properties) as up
+  WHERE _TABLE_SUFFIX BETWEEN '20200531' AND '20200531'
+  GROUP BY 1
+),
+B1 AS(
+  SELECT
+    user_pseudo_id, 
+    CASE
+      WHEN (UCIC IS NULL AND UCID IS NULL) THEN NULL
+      WHEN (UCIC IS NULL AND UCID IS NOT NULL) THEN UCID
+      WHEN (UCIC IS NOT NULL AND UCID IS NULL) THEN UCIC
+      WHEN (UCIC IS NOT NULL AND UCID IS NOT NULL) THEN UCID END CSNO_MD
+  FROM B
+)
+
+
+SELECT
+  EVENT_DT, EVENT_TIMESTAMP, EVENT_TIME, EVENT_NAME, FIREBASE_ID, SESSION_ID, SESSION_SEQ, BF_EVENT, AF_EVENT, DURATION_SECOND,
+  IF(EVENT_NAME = 'session_start', '세션시작', b1.internal_event_detail) AS EVENT_NAME_KR,
+  IF(BF_EVENT = 'session_start', '세션시작', b2.internal_event_detail) AS BF_EVENT_KR,
+  IF(AF_EVENT IS NULL, '세션종료', b3.internal_event_detail) AS AF_EVENT_KR,
+  b4.CSNO_MD AS CSNO_MD
+FROM
+  A4
+  LEFT JOIN `neo-smart-gcm.analytics_196410282.event_name_list` AS b1 ON A4.EVENT_NAME = b1.internal_event_name
+  LEFT JOIN `neo-smart-gcm.analytics_196410282.event_name_list` AS b2 ON A4.BF_EVENT = b2.internal_event_name
+  LEFT JOIN `neo-smart-gcm.analytics_196410282.event_name_list` AS b3 ON A4.AF_EVENT = b3.internal_event_name
+  LEFT JOIN B1 as b4 ON A4.FIREBASE_ID = b4.user_pseudo_id
+ORDER BY 5, 6, 2
